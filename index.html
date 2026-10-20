@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Radio Station</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=Inter:wght@400;600&display=swap');
+        
+        body { 
+            background: #09090b; 
+            color: #fff; 
+            font-family: 'Inter', sans-serif; 
+            display: flex; 
+            flex-direction: column; 
+            align-items: center; 
+            justify-content: center; 
+            min-height: 100vh; 
+            margin: 0; 
+            padding: 20px;
+        }
+        
+        .hidden { display: none !important; }
+        
+        .spinner { 
+            border: 4px solid rgba(255,255,255,0.1); 
+            border-left-color: #3b82f6; 
+            border-radius: 50%; 
+            width: 40px; 
+            height: 40px; 
+            animation: spin 1s linear infinite; 
+            margin: 20px auto; 
+        }
+        
+        @keyframes spin { to { transform: rotate(360deg); } }
+        
+        .container { 
+            max-width: 600px; 
+            width: 100%; 
+            background: #121216; 
+            padding: 40px; 
+            border-radius: 24px; 
+            border: 1px solid #27272a; 
+            text-align: left; 
+            box-shadow: 0 20px 40px rgba(0,0,0,0.5); 
+            box-sizing: border-box;
+        }
+        
+        .source { 
+            color: #3b82f6; 
+            font-weight: 700; 
+            font-size: 0.8rem; 
+            text-transform: uppercase; 
+            letter-spacing: 1px; 
+        }
+        
+        .title { 
+            font-family: 'Playfair Display', serif; 
+            font-size: 2rem; 
+            margin: 10px 0 20px 0; 
+            line-height: 1.2; 
+        }
+        
+        .script { 
+            color: #a1a1aa; 
+            line-height: 1.7; 
+            font-size: 1rem; 
+            margin-bottom: 30px; 
+            white-space: pre-wrap;
+        }
+        
+        audio { 
+            width: 100%; 
+            margin-bottom: 20px; 
+            border-radius: 8px;
+        }
+        
+        .btn { 
+            background: #3b82f6; 
+            color: #fff; 
+            border: none; 
+            padding: 15px 30px; 
+            border-radius: 30px; 
+            font-size: 1rem; 
+            font-weight: 600; 
+            cursor: pointer; 
+            transition: 0.2s;
+            display: block;
+        }
+        
+        .btn:hover { background: #2563eb; }
+        
+        .queue-status { 
+            font-size: 0.9rem; 
+            color: #a1a1aa; 
+            margin-bottom: 15px; 
+            text-align: center; 
+        }
+
+        #start-screen {
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Start Screen -->
+    <div id="start-screen">
+        <h1 style="font-family: 'Playfair Display', serif; font-size: 3rem; margin-bottom: 10px;">AI Radio</h1>
+        <p style="color: #a1a1aa; margin-bottom: 30px;">Generates 5 full-length AI news broadcasts.</p>
+        <button class="btn" onclick="startRadio()" style="margin: 0 auto;">Start Radio Broadcast</button>
+    </div>
+
+    <!-- Loading Screen -->
+    <div id="loading" class="hidden" style="text-align: center;">
+        <div class="spinner"></div>
+        <p>Fetching 5 full articles and generating AI audio...</p>
+        <p style="font-size: 0.8rem; color: #666;">(This takes about 30-60 seconds)</p>
+    </div>
+
+    <!-- Radio Player -->
+    <div id="radio-player" class="hidden">
+        <div class="container">
+            <div class="queue-status" id="queue-status">Preparing Broadcast...</div>
+            <div class="source" id="news-source">Source</div>
+            <h1 class="title" id="news-title">Title</h1>
+            
+            <!-- Audio player with cross-origin allowed -->
+            <audio id="audio-element" controls crossorigin="anonymous"></audio>
+            
+            <div class="script" id="news-script">Script</div>
+            <button class="btn" onclick="playNext()" style="width: 100%;">Skip to Next Story</button>
+        </div>
+    </div>
+
+    <script>
+        let playlist = [];
+        let currentIndex = 0;
+
+        async function startRadio() {
+            document.getElementById('start-screen').classList.add('hidden');
+            document.getElementById('loading').classList.remove('hidden');
+
+            try {
+                // Fetch the 5 stories from the Python server
+                const response = await fetch('/get_radio');
+                
+                if (!response.ok) {
+                    throw new Error("Server responded with an error.");
+                }
+
+                playlist = await response.json();
+                
+                if (!playlist || playlist.length === 0) {
+                    alert("Failed to generate radio. Check the Python terminal for errors.");
+                    location.reload();
+                    return;
+                }
+
+                // Show the player
+                document.getElementById('loading').classList.add('hidden');
+                document.getElementById('radio-player').classList.remove('hidden');
+                
+                currentIndex = 0;
+                loadStory(currentIndex);
+
+            } catch (error) {
+                alert("Make sure the Python server is running and you opened this via http://127.0.0.1:5000");
+                location.reload();
+            }
+        }
+
+        function loadStory(index) {
+            const story = playlist[index];
+            
+            // Update UI
+            document.getElementById('queue-status').innerText = `Now Playing: Story ${index + 1} of ${playlist.length}`;
+            document.getElementById('news-title').innerText = story.title;
+            document.getElementById('news-script').innerText = story.script;
+            document.getElementById('news-source').innerText = story.source.toUpperCase();
+            
+            // Load and play audio
+            const audio = document.getElementById('audio-element');
+            audio.src = story.audio_url;
+            audio.load();
+            
+            // Browsers block autoplay unless user interacts, but since they clicked "Start Radio", it should be allowed
+            audio.play().catch(e => {
+                console.log("Autoplay blocked. User must press play.");
+            });
+
+            // Set up auto-play for the next story when this one finishes
+            audio.onended = () => {
+                if (currentIndex < playlist.length - 1) {
+                    currentIndex++;
+                    loadStory(currentIndex);
+                } else {
+                    document.getElementById('queue-status').innerText = "Broadcast Complete";
+                    document.getElementById('audio-element').style.display = 'none';
+                }
+            };
+        }
+
+        function playNext() {
+            if (currentIndex < playlist.length - 1) {
+                currentIndex++;
+                loadStory(currentIndex);
+            } else {
+                alert("End of broadcast.");
+            }
+        }
+    </script>
+</body>
+</html>
