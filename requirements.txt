@@ -1,0 +1,8 @@
+feedparser
+google-genai
+edge-tts
+requests
+beautifulsoup4
+flask
+flask-cors
+python-dotenv
