@@ -7,6 +7,7 @@ import os
 import requests
 import time
 import uuid
+import threading
 from bs4 import BeautifulSoup
 from flask import Flask, jsonify, send_from_directory
 from flask_cors import CORS
@@ -30,13 +31,20 @@ FEEDS = [
     "https://feeds.skynews.com/feeds/rss/home.xml"
 ]
 
-# --- 2. THE VOICE GENERATOR ---
+# --- 2. GLOBAL STATUS TRACKER ---
+# This holds the state so the browser can check it without timing out
+radio_status = {
+    "status": "idle", # idle, generating, ready
+    "playlist": []
+}
+
+# --- 3. THE VOICE GENERATOR ---
 async def generate_audio(text, filename):
     voice = "en-US-ChristopherNeural"
     communicate = edge_tts.Communicate(text, voice)
     await communicate.save(filename)
 
-# --- 3. THE SCRAPER ---
+# --- 4. THE SCRAPER ---
 def get_full_article_text(url):
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
@@ -48,70 +56,102 @@ def get_full_article_text(url):
     except Exception:
         return ""
 
-# --- 4. SINGLE STORY GENERATOR ---
-@app.route('/get_single_story')
-def get_single_story():
-    random.shuffle(FEEDS)
+# --- 5. THE BACKGROUND WORKER (Generates the 5 stories) ---
+def build_radio_playlist():
+    global radio_status
+    playlist = []
+    used_urls = set()
     
-    for chosen_feed in FEEDS:
-        try:
-            feed = feedparser.parse(chosen_feed, request_headers={'User-Agent': 'Mozilla/5.0'})
-            if not feed.entries: continue
+    for i in range(1, 6):
+        success = False
+        random.shuffle(FEEDS)
+        
+        for chosen_feed in FEEDS:
+            if success: break
+            try:
+                feed = feedparser.parse(chosen_feed, request_headers={'User-Agent': 'Mozilla/5.0'})
+                if not feed.entries: continue
 
-            # Pick a random recent article
-            latest_article = random.choice(feed.entries[:5])
-            article_url = latest_article.link
-            title = latest_article.title
-            
-            raw_text = get_full_article_text(article_url)
-            if not raw_text or len(raw_text) < 100:
-                raw_text = latest_article.get('summary', latest_article.get('description', ''))
+                latest_article = feed.entries[0]
+                article_url = latest_article.link
+                
+                if article_url in used_urls: continue
+                
+                title = latest_article.title
+                raw_text = get_full_article_text(article_url)
+                
+                if not raw_text or len(raw_text) < 100:
+                    raw_text = latest_article.get('summary', latest_article.get('description', ''))
 
-            print(f"🤖 Generating AI Script for: {title}")
-            prompt = f"""
-            You are a professional radio news anchor. I will give you an article.
-            If the article is not in English, translate it to English first.
-            Rewrite the article into a detailed 3-paragraph spoken audio script.
-            Explain the story clearly and conversationally. Do not include URLs, hashtags, or stage directions.
-            
-            ARTICLE TEXT:
-            {raw_text}
-            """
+                print(f"🤖 Generating AI Script for: {title}")
+                prompt = f"""
+                You are a professional radio news anchor. I will give you an article.
+                If the article is not in English, translate it to English first.
+                Rewrite the article into a detailed 3-paragraph spoken audio script.
+                Explain the story clearly and conversationally. Do not include URLs, hashtags, or stage directions.
+                
+                ARTICLE TEXT:
+                {raw_text}
+                """
 
-            response = None
-            for attempt in range(2): # Try twice if Google is busy
-                try:
-                    response = client.models.generate_content(
-                        model='gemini-3.8-flash',
-                        contents=prompt,
-                    )
-                    break
-                except Exception as e:
-                    if "503" in str(e):
-                        time.sleep(2)
-                    else:
-                        raise e
-                        
-            if not response: continue
+                response = None
+                for attempt in range(3):
+                    try:
+                        response = client.models.generate_content(
+                            model='gemini-3.8-flash',
+                            contents=prompt,
+                        )
+                        break
+                    except Exception as e:
+                        if "503" in str(e):
+                            print(f"⚠️ Google busy. Retrying...")
+                            time.sleep(3)
+                        else:
+                            raise e
+                            
+                if not response: continue
 
-            ai_script = response.text
-            
-            # Generate unique file name to avoid browser cache issues
-            audio_filename = f"story_{uuid.uuid4().hex}.mp3"
-            asyncio.run(generate_audio(ai_script, audio_filename))
+                ai_script = response.text
+                audio_filename = f"story_{uuid.uuid4().hex}.mp3"
+                asyncio.run(generate_audio(ai_script, audio_filename))
 
-            return jsonify({
-                "title": title,
-                "source": chosen_feed.split('/')[2].replace('www.', ''),
-                "script": ai_script,
-                "audio_url": f"/audio/{audio_filename}" 
-            })
-            
-        except Exception as e:
-            print(f"⚠️ Error with feed: {e}")
-            continue
+                playlist.append({
+                    "title": title,
+                    "source": chosen_feed.split('/')[2].replace('www.', ''),
+                    "script": ai_script,
+                    "audio_url": f"/audio/{audio_filename}" 
+                })
+                used_urls.add(article_url)
+                success = True
+                
+            except Exception as e:
+                continue
+                
+    # Save to global status when done
+    radio_status["playlist"] = playlist
+    radio_status["status"] = "ready"
 
-    return jsonify({"error": "Could not fetch any stories."}), 500
+# --- 6. THE WEB ROUTES ---
+@app.route('/start_radio')
+def start_radio():
+    global radio_status
+    # Reset status
+    radio_status["status"] = "generating"
+    radio_status["playlist"] = []
+    
+    # Start the heavy lifting in a background thread
+    thread = threading.Thread(target=build_radio_playlist)
+    thread.start()
+    
+    return jsonify({"message": "Generation started"})
+
+@app.route('/check_status')
+def check_status():
+    global radio_status
+    if radio_status["status"] == "ready":
+        return jsonify({"status": "ready", "playlist": radio_status["playlist"]})
+    else:
+        return jsonify({"status": "generating"})
 
 @app.route('/audio/<filename>')
 def serve_audio(filename):
