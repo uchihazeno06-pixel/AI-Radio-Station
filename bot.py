@@ -6,13 +6,12 @@ import random
 import os
 import requests
 import time
-import concurrent.futures
+import uuid
 from bs4 import BeautifulSoup
 from flask import Flask, jsonify, send_from_directory
 from flask_cors import CORS
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
 load_dotenv()
 
 # --- 1. SETUP ---
@@ -46,19 +45,21 @@ def get_full_article_text(url):
         paragraphs = soup.find_all('p')
         text = " ".join([p.get_text() for p in paragraphs])
         return text
-    except Exception as e:
+    except Exception:
         return ""
 
-# --- 4. THE RADIO QUEUE (Parallel Fetching) ---
-def fetch_single_story(i):
-    """Helper function to fetch one story"""
+# --- 4. SINGLE STORY GENERATOR ---
+@app.route('/get_single_story')
+def get_single_story():
     random.shuffle(FEEDS)
+    
     for chosen_feed in FEEDS:
         try:
             feed = feedparser.parse(chosen_feed, request_headers={'User-Agent': 'Mozilla/5.0'})
             if not feed.entries: continue
 
-            latest_article = feed.entries[0]
+            # Pick a random recent article
+            latest_article = random.choice(feed.entries[:5])
             article_url = latest_article.link
             title = latest_article.title
             
@@ -78,7 +79,7 @@ def fetch_single_story(i):
             """
 
             response = None
-            for attempt in range(3):
+            for attempt in range(2): # Try twice if Google is busy
                 try:
                     response = client.models.generate_content(
                         model='gemini-3.8-flash',
@@ -87,42 +88,30 @@ def fetch_single_story(i):
                     break
                 except Exception as e:
                     if "503" in str(e):
-                        print(f"⚠️ Google busy. Retrying...")
                         time.sleep(2)
                     else:
                         raise e
                         
-            if not response: return None
+            if not response: continue
 
             ai_script = response.text
-            audio_filename = f"story_{i}.mp3"
+            
+            # Generate unique file name to avoid browser cache issues
+            audio_filename = f"story_{uuid.uuid4().hex}.mp3"
             asyncio.run(generate_audio(ai_script, audio_filename))
 
-            return {
+            return jsonify({
                 "title": title,
                 "source": chosen_feed.split('/')[2].replace('www.', ''),
                 "script": ai_script,
                 "audio_url": f"/audio/{audio_filename}" 
-            }
+            })
+            
         except Exception as e:
+            print(f"⚠️ Error with feed: {e}")
             continue
-    return None
 
-@app.route('/get_radio')
-def get_radio():
-    playlist = []
-    # Run 5 fetches at the exact same time to beat the Render timeout
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        results = list(executor.map(fetch_single_story, range(1, 6)))
-        
-    for r in results:
-        if r is not None:
-            playlist.append(r)
-                
-    if not playlist:
-        return jsonify({"error": "Failed to generate radio."}), 500
-        
-    return jsonify(playlist)
+    return jsonify({"error": "Could not fetch any stories."}), 500
 
 @app.route('/audio/<filename>')
 def serve_audio(filename):
