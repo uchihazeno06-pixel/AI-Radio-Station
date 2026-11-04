@@ -1,26 +1,22 @@
-import os
-from dotenv import load_dotenv
 import feedparser
 from google import genai
 import asyncio
 import edge_tts
 import random
+import os
 import requests
+import time
+import concurrent.futures
 from bs4 import BeautifulSoup
 from flask import Flask, jsonify, send_from_directory
 from flask_cors import CORS
+from dotenv import load_dotenv
 
-# --- 1. SETUP ---
-# Load the .env file
+# Load environment variables from .env file
 load_dotenv()
 
-# Read the key from the environment variable
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") 
-
-if not GEMINI_API_KEY:
-    print("❌ ERROR: GEMINI_API_KEY is missing. Check your .env file.")
-    exit()
-
+# --- 1. SETUP ---
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 app = Flask(__name__)
@@ -41,7 +37,7 @@ async def generate_audio(text, filename):
     communicate = edge_tts.Communicate(text, voice)
     await communicate.save(filename)
 
-# --- 3. THE SCRAPER (Gets the full story) ---
+# --- 3. THE SCRAPER ---
 def get_full_article_text(url):
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
@@ -53,65 +49,75 @@ def get_full_article_text(url):
     except Exception as e:
         return ""
 
-# --- 4. THE RADIO QUEUE ---
+# --- 4. THE RADIO QUEUE (Parallel Fetching) ---
+def fetch_single_story(i):
+    """Helper function to fetch one story"""
+    random.shuffle(FEEDS)
+    for chosen_feed in FEEDS:
+        try:
+            feed = feedparser.parse(chosen_feed, request_headers={'User-Agent': 'Mozilla/5.0'})
+            if not feed.entries: continue
+
+            latest_article = feed.entries[0]
+            article_url = latest_article.link
+            title = latest_article.title
+            
+            raw_text = get_full_article_text(article_url)
+            if not raw_text or len(raw_text) < 100:
+                raw_text = latest_article.get('summary', latest_article.get('description', ''))
+
+            print(f"🤖 Generating AI Script for: {title}")
+            prompt = f"""
+            You are a professional radio news anchor. I will give you an article.
+            If the article is not in English, translate it to English first.
+            Rewrite the article into a detailed 3-paragraph spoken audio script.
+            Explain the story clearly and conversationally. Do not include URLs, hashtags, or stage directions.
+            
+            ARTICLE TEXT:
+            {raw_text}
+            """
+
+            response = None
+            for attempt in range(3):
+                try:
+                    response = client.models.generate_content(
+                        model='gemini-3.8-flash',
+                        contents=prompt,
+                    )
+                    break
+                except Exception as e:
+                    if "503" in str(e):
+                        print(f"⚠️ Google busy. Retrying...")
+                        time.sleep(2)
+                    else:
+                        raise e
+                        
+            if not response: return None
+
+            ai_script = response.text
+            audio_filename = f"story_{i}.mp3"
+            asyncio.run(generate_audio(ai_script, audio_filename))
+
+            return {
+                "title": title,
+                "source": chosen_feed.split('/')[2].replace('www.', ''),
+                "script": ai_script,
+                "audio_url": f"/audio/{audio_filename}" 
+            }
+        except Exception as e:
+            continue
+    return None
+
 @app.route('/get_radio')
 def get_radio():
     playlist = []
-    used_urls = set()
-    
-    for i in range(1, 6): # Generate 5 stories
-        print(f"\n--- Fetching Story {i} of 5 ---")
-        success = False
-        random.shuffle(FEEDS)
+    # Run 5 fetches at the exact same time to beat the Render timeout
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        results = list(executor.map(fetch_single_story, range(1, 6)))
         
-        for chosen_feed in FEEDS:
-            if success: break
-            try:
-                feed = feedparser.parse(chosen_feed, request_headers={'User-Agent': 'Mozilla/5.0'})
-                if not feed.entries: continue
-
-                latest_article = feed.entries[0]
-                article_url = latest_article.link
-                
-                if article_url in used_urls: continue
-                
-                title = latest_article.title
-                raw_text = get_full_article_text(article_url)
-                
-                if not raw_text or len(raw_text) < 100:
-                    raw_text = latest_article.get('summary', latest_article.get('description', ''))
-
-                print(f"🤖 Generating AI Script for: {title}")
-                prompt = f"""
-                You are a professional radio news anchor. I will give you an article.
-                If the article is not in English, translate it to English first.
-                Rewrite the article into a detailed 3-paragraph spoken audio script.
-                Explain the story clearly and conversationally. Do not include URLs, hashtags, or stage directions.
-                
-                ARTICLE TEXT:
-                {raw_text}
-                """
-
-                response = client.models.generate_content(
-                    model='gemini-3.8-flash',
-                    contents=prompt,
-                )
-                ai_script = response.text
-
-                audio_filename = f"story_{i}.mp3"
-                asyncio.run(generate_audio(ai_script, audio_filename))
-
-                playlist.append({
-                    "title": title,
-                    "source": chosen_feed.split('/')[2].replace('www.', ''),
-                    "script": ai_script,
-                    "audio_url": f"/audio/{audio_filename}" 
-                })
-                used_urls.add(article_url)
-                success = True
-            except Exception as e:
-                print(f"⚠️ Failed: {e}")
-                continue
+    for r in results:
+        if r is not None:
+            playlist.append(r)
                 
     if not playlist:
         return jsonify({"error": "Failed to generate radio."}), 500
