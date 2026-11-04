@@ -115,7 +115,7 @@
     <div id="loading" class="hidden" style="text-align: center;">
         <div class="spinner"></div>
         <p>Fetching 5 full articles and generating AI audio...</p>
-        <p style="font-size: 0.8rem; color: #666;">(This takes about 30-60 seconds)</p>
+        <p style="font-size: 0.8rem; color: #666;">(This takes about 15-20 seconds)</p>
     </div>
 
     <!-- Radio Player -->
@@ -125,7 +125,6 @@
             <div class="source" id="news-source">Source</div>
             <h1 class="title" id="news-title">Title</h1>
             
-            <!-- Audio player with cross-origin allowed -->
             <audio id="audio-element" controls crossorigin="anonymous"></audio>
             
             <div class="script" id="news-script">Script</div>
@@ -142,7 +141,7 @@
             document.getElementById('loading').classList.remove('hidden');
 
             try {
-                // Fetch the 5 stories from the Python server
+                // Fixed: Using relative path for deployment
                 const response = await fetch('/get_radio');
                 
                 if (!response.ok) {
@@ -152,12 +151,11 @@
                 playlist = await response.json();
                 
                 if (!playlist || playlist.length === 0) {
-                    alert("Failed to generate radio. Check the Python terminal for errors.");
+                    alert("Failed to generate radio. Check the server logs.");
                     location.reload();
                     return;
                 }
 
-                // Show the player
                 document.getElementById('loading').classList.add('hidden');
                 document.getElementById('radio-player').classList.remove('hidden');
                 
@@ -165,7 +163,7 @@
                 loadStory(currentIndex);
 
             } catch (error) {
-                alert("Make sure the Python server is running and you opened this via http://127.0.0.1:5000");
+                alert("Make sure the server is running and try refreshing.");
                 location.reload();
             }
         }
@@ -173,23 +171,19 @@
         function loadStory(index) {
             const story = playlist[index];
             
-            // Update UI
             document.getElementById('queue-status').innerText = `Now Playing: Story ${index + 1} of ${playlist.length}`;
             document.getElementById('news-title').innerText = story.title;
             document.getElementById('news-script').innerText = story.script;
             document.getElementById('news-source').innerText = story.source.toUpperCase();
             
-            // Load and play audio
             const audio = document.getElementById('audio-element');
             audio.src = story.audio_url;
             audio.load();
             
-            // Browsers block autoplay unless user interacts, but since they clicked "Start Radio", it should be allowed
             audio.play().catch(e => {
                 console.log("Autoplay blocked. User must press play.");
             });
 
-            // Set up auto-play for the next story when this one finishes
             audio.onended = () => {
                 if (currentIndex < playlist.length - 1) {
                     currentIndex++;
