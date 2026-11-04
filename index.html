@@ -26,13 +26,14 @@
 
     <div id="start-screen">
         <h1 style="font-family: 'Playfair Display', serif; font-size: 3rem; margin-bottom: 10px;">AI Radio</h1>
-        <p style="color: #a1a1aa; margin-bottom: 30px;">Continuous AI news broadcasts.</p>
+        <p style="color: #a1a1aa; margin-bottom: 30px;">Generates 5 full-length AI news broadcasts.</p>
         <button class="btn" onclick="startRadio()" style="margin: 0 auto;">Start Radio Broadcast</button>
     </div>
 
     <div id="loading" class="hidden" style="text-align: center;">
         <div class="spinner"></div>
-        <p id="loading-text">Generating first story... (This takes 15-20 seconds)</p>
+        <p>Scraping 5 articles and generating AI audio...</p>
+        <p style="font-size: 0.8rem; color: #666;">(This takes about 30-60 seconds)</p>
     </div>
 
     <div id="radio-player" class="hidden">
@@ -42,75 +43,91 @@
             <h1 class="title" id="news-title">Title</h1>
             <audio id="audio-element" controls crossorigin="anonymous"></audio>
             <div class="script" id="news-script">Script</div>
-            <button class="btn" onclick="loadStory()" style="width: 100%;">Skip to Next Story</button>
+            <button class="btn" onclick="playNext()" style="width: 100%;">Skip to Next Story</button>
         </div>
     </div>
 
     <script>
-        let storiesLoaded = 0;
-        let isFetching = false;
+        let playlist = [];
+        let currentIndex = 0;
 
-        function startRadio() {
+        async function startRadio() {
             document.getElementById('start-screen').classList.add('hidden');
             document.getElementById('loading').classList.remove('hidden');
-            storiesLoaded = 0;
-            loadStory();
-        }
-
-        async function loadStory() {
-            if (isFetching) return;
-            isFetching = true;
-            storiesLoaded++;
-
-            // If it's not the first story, show a mini loading state
-            if (storiesLoaded > 1) {
-                document.getElementById('queue-status').innerText = `Buffering Story ${storiesLoaded}...`;
-            }
 
             try {
-                // Fetch ONE story at a time from the server
-                const response = await fetch('/get_single_story');
+                // 1. Tell the server to start generating
+                await fetch('/start_radio');
                 
-                if (!response.ok) {
-                    throw new Error("Server error");
-                }
-
-                const story = await response.json();
+                // 2. Poll the server every 3 seconds to see if it's done
+                checkProgress();
                 
-                if (story.error) {
-                    alert("Failed to generate story. Server might be busy.");
-                    isFetching = false;
-                    return;
-                }
-
-                // Hide loading, show player
-                document.getElementById('loading').classList.add('hidden');
-                document.getElementById('radio-player').classList.remove('hidden');
-
-                // Update UI
-                document.getElementById('queue-status').innerText = `Now Playing: Story ${storiesLoaded}`;
-                document.getElementById('news-title').innerText = story.title;
-                document.getElementById('news-script').innerText = story.script;
-                document.getElementById('news-source').innerText = story.source.toUpperCase();
-                
-                const audio = document.getElementById('audio-element');
-                audio.src = story.audio_url;
-                audio.load();
-                audio.play().catch(e => console.log("Click play to start audio."));
-
-                isFetching = false;
-
-                // When the story ends, automatically load the next one
-                audio.onended = () => {
-                    loadStory();
-                };
-
             } catch (error) {
-                console.error(error);
-                alert("Connection lost. Trying again...");
-                isFetching = false;
-                // Try again after 3 seconds if it fails
-                setTimeout(loadStory, 3000); 
+                alert("Could not connect to server.");
+                location.reload();
+            }
+        }
+
+        async function checkProgress() {
+            try {
+                const response = await fetch('/check_status');
+                const data = await response.json();
+
+                if (data.status === "ready") {
+                    // It's done! Load the playlist.
+                    playlist = data.playlist;
+                    
+                    if (!playlist || playlist.length === 0) {
+                        alert("Failed to generate radio. Check server logs.");
+                        location.reload();
+                        return;
+                    }
+
+                    document.getElementById('loading').classList.add('hidden');
+                    document.getElementById('radio-player').classList.remove('hidden');
+                    
+                    currentIndex = 0;
+                    loadStory(currentIndex);
+                } else {
+                    // Still generating, check again in 3 seconds
+                    setTimeout(checkProgress, 3000);
+                }
+            } catch (error) {
+                console.log("Checking again...");
+                setTimeout(checkProgress, 3000);
+            }
+        }
+
+        function loadStory(index) {
+            const story = playlist[index];
+            
+            document.getElementById('queue-status').innerText = `Now Playing: Story ${index + 1} of ${playlist.length}`;
+            document.getElementById('news-title').innerText = story.title;
+            document.getElementById('news-script').innerText = story.script;
+            document.getElementById('news-source').innerText = story.source.toUpperCase();
+            
+            const audio = document.getElementById('audio-element');
+            audio.src = story.audio_url;
+            audio.load();
+            audio.play().catch(e => console.log("Autoplay blocked. User must click play."));
+
+            audio.onended = () => {
+                if (currentIndex < playlist.length - 1) {
+                    currentIndex++;
+                    loadStory(currentIndex);
+                } else {
+                    document.getElementById('queue-status').innerText = "Broadcast Complete";
+                    document.getElementById('audio-element').style.display = 'none';
+                }
+            };
+        }
+
+        function playNext() {
+            if (currentIndex < playlist.length - 1) {
+                currentIndex++;
+                loadStory(currentIndex);
+            } else {
+                alert("End of broadcast.");
             }
         }
     </script>
