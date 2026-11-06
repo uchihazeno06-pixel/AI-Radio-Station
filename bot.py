@@ -49,7 +49,7 @@ async def generate_audio(text, filename):
 def get_full_article_text(url):
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=headers, timeout=8)
         soup = BeautifulSoup(response.content, 'html.parser')
         paragraphs = soup.find_all('p')
         text = " ".join([p.get_text() for p in paragraphs])
@@ -63,7 +63,8 @@ def build_radio_playlist():
     playlist = []
     used_urls = set()
     
-    for i in range(1, 6):
+    # We only need 3 stories to ensure it finishes fast enough for Render
+    for i in range(1, 4): 
         success = False
         random.shuffle(FEEDS)
         
@@ -80,12 +81,14 @@ def build_radio_playlist():
                 
                 title = latest_article.title
                 
-                radio_status["current_action"] = f"Scraping full article: {title}"
+                radio_status["current_action"] = f"Scraping: {title}"
                 
-                raw_text = get_full_article_text(article_url)
+                # FALLBACK: Get RSS text first, try to scrape, if scrape fails, use RSS.
+                raw_text = latest_article.get('summary', latest_article.get('description', ''))
+                scraped_text = get_full_article_text(article_url)
                 
-                if not raw_text or len(raw_text) < 100:
-                    raw_text = latest_article.get('summary', latest_article.get('description', ''))
+                if scraped_text and len(scraped_text) > 200:
+                    raw_text = scraped_text
 
                 radio_status["current_action"] = f"Writing AI script: {title}"
                 
@@ -100,21 +103,23 @@ def build_radio_playlist():
                 """
 
                 response = None
-                for attempt in range(3):
-                    try:
-                        response = client.models.generate_content(
-                            model='gemini-3.8-flash',
-                            contents=prompt,
-                        )
-                        break
-                    except Exception as e:
-                        if "503" in str(e):
-                            print(f"⚠️ Google busy. Retrying...")
-                            time.sleep(3)
-                        else:
-                            raise e
-                            
-                if not response: continue
+                # FALLBACK: Try Gemini 3.8, if it fails, try 3.8-lite
+                for model_name in ['gemini-3.8-flash', 'gemini-3.8-flash-lite']:
+                    for attempt in range(2):
+                        try:
+                            response = client.models.generate_content(
+                                model=model_name,
+                                contents=prompt,
+                            )
+                            break
+                        except Exception as e:
+                            print(f"⚠️ {model_name} busy: {e}")
+                            time.sleep(2)
+                    if response: break
+
+                if not response: 
+                    print("❌ AI completely failed for this story. Skipping...")
+                    continue
 
                 ai_script = response.text
                 
@@ -133,6 +138,7 @@ def build_radio_playlist():
                 success = True
                 
             except Exception as e:
+                print(f"Error: {e}")
                 continue
                 
     radio_status["playlist"] = playlist
