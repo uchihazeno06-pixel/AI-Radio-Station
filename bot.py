@@ -13,7 +13,6 @@ from flask import Flask, jsonify, send_from_directory
 from flask_cors import CORS
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
 load_dotenv()
 
 # --- 1. SETUP ---
@@ -32,20 +31,17 @@ FEEDS = [
     "https://feeds.skynews.com/feeds/rss/home.xml"
 ]
 
-# --- 2. GLOBAL STATUS TRACKER ---
 radio_status = {
     "status": "idle", 
     "current_action": "",
     "playlist": []
 }
 
-# --- 3. THE VOICE GENERATOR ---
 async def generate_audio(text, filename):
     voice = "en-US-ChristopherNeural"
     communicate = edge_tts.Communicate(text, voice)
     await communicate.save(filename)
 
-# --- 4. THE SCRAPER ---
 def get_full_article_text(url):
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
@@ -57,13 +53,12 @@ def get_full_article_text(url):
     except Exception:
         return ""
 
-# --- 5. THE BACKGROUND WORKER ---
 def build_radio_playlist():
     global radio_status
     playlist = []
     used_urls = set()
     
-    # We only need 3 stories to ensure it finishes fast enough for Render
+    # Only generate 3 stories to guarantee we beat Render's timeout
     for i in range(1, 4): 
         success = False
         random.shuffle(FEEDS)
@@ -80,10 +75,9 @@ def build_radio_playlist():
                 if article_url in used_urls: continue
                 
                 title = latest_article.title
-                
                 radio_status["current_action"] = f"Scraping: {title}"
                 
-                # FALLBACK: Get RSS text first, try to scrape, if scrape fails, use RSS.
+                # Fallback 1: Use RSS text if scraping fails
                 raw_text = latest_article.get('summary', latest_article.get('description', ''))
                 scraped_text = get_full_article_text(article_url)
                 
@@ -92,39 +86,24 @@ def build_radio_playlist():
 
                 radio_status["current_action"] = f"Writing AI script: {title}"
                 
-                prompt = f"""
-                You are a professional radio news anchor. I will give you an article.
-                If the article is not in English, translate it to English first.
-                Rewrite the article into a detailed 3-paragraph spoken audio script.
-                Explain the story clearly and conversationally. Do not include URLs, hashtags, or stage directions.
-                
-                ARTICLE TEXT:
-                {raw_text}
-                """
+                prompt = f"Rewrite this into a 3-paragraph radio script. If not English, translate it. No URLs or hashtags.\n\n{raw_text}"
 
                 response = None
-                # FALLBACK: Try Gemini 3.8, if it fails, try 3.8-lite
+                # Fallback 2: Try two different AI models if the first is busy
                 for model_name in ['gemini-3.8-flash', 'gemini-3.8-flash-lite']:
-                    for attempt in range(2):
-                        try:
-                            response = client.models.generate_content(
-                                model=model_name,
-                                contents=prompt,
-                            )
-                            break
-                        except Exception as e:
-                            print(f"⚠️ {model_name} busy: {e}")
-                            time.sleep(2)
-                    if response: break
+                    try:
+                        response = client.models.generate_content(model=model_name, contents=prompt)
+                        break
+                    except Exception:
+                        time.sleep(2)
 
-                if not response: 
-                    print("❌ AI completely failed for this story. Skipping...")
-                    continue
+                # Fallback 3: If AI completely fails, just read the raw text aloud
+                if response and response.text:
+                    ai_script = response.text
+                else:
+                    ai_script = raw_text
 
-                ai_script = response.text
-                
                 radio_status["current_action"] = f"Generating audio: {title}"
-                
                 audio_filename = f"story_{uuid.uuid4().hex}.mp3"
                 asyncio.run(generate_audio(ai_script, audio_filename))
 
@@ -145,7 +124,6 @@ def build_radio_playlist():
     radio_status["current_action"] = "Finished!"
     radio_status["status"] = "ready"
 
-# --- 6. THE WEB ROUTES ---
 @app.route('/start_radio')
 def start_radio():
     global radio_status
@@ -164,10 +142,7 @@ def check_status():
     if radio_status["status"] == "ready":
         return jsonify({"status": "ready", "playlist": radio_status["playlist"]})
     else:
-        return jsonify({
-            "status": "generating", 
-            "action": radio_status.get("current_action", "Starting up...")
-        })
+        return jsonify({"status": "generating", "action": radio_status.get("current_action", "Starting up...")})
 
 @app.route('/audio/<filename>')
 def serve_audio(filename):
@@ -180,5 +155,4 @@ def serve_index():
     return send_from_directory(os.getcwd(), 'index.html')
 
 if __name__ == "__main__":
-    print("🚀 Server starting... Open http://127.0.0.1:5000 in your browser.")
     app.run(port=5000, threaded=True)
