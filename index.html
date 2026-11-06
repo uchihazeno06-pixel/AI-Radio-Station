@@ -100,6 +100,15 @@
         #start-screen {
             text-align: center;
         }
+
+        /* Added styling for the live action text */
+        #live-status {
+            color: #3b82f6; 
+            font-size: 0.95rem; 
+            font-weight: 600;
+            margin-top: 15px; 
+            min-height: 24px;
+        }
     </style>
 </head>
 <body>
@@ -112,10 +121,11 @@
     </div>
 
     <!-- Loading Screen -->
-    <div id="loading" class="hidden" style="text-align: center;">
+    <div id="loading" class="hidden" style="text-align: center; max-width: 500px;">
         <div class="spinner"></div>
-        <p>Scraping 5 articles and generating AI audio...</p>
-        <p style="font-size: 0.8rem; color: #666;">(This takes about 30-60 seconds)</p>
+        <p style="font-weight: 600; color: #fff;">Building your broadcast...</p>
+        <p id="live-status">Connecting to server...</p>
+        <p style="font-size: 0.8rem; color: #666; margin-top: 20px;">(This takes about 1-2 minutes)</p>
     </div>
 
     <!-- Radio Player -->
@@ -125,7 +135,6 @@
             <div class="source" id="news-source">Source</div>
             <h1 class="title" id="news-title">Title</h1>
             
-            <!-- crossorigin allows the browser to play the audio file -->
             <audio id="audio-element" controls crossorigin="anonymous"></audio>
             
             <div class="script" id="news-script">Script</div>
@@ -138,17 +147,13 @@
         let currentIndex = 0;
 
         async function startRadio() {
-            // Switch screens
             document.getElementById('start-screen').classList.add('hidden');
             document.getElementById('loading').classList.remove('hidden');
+            document.getElementById('live-status').innerText = "Waking up the server...";
 
             try {
-                // 1. Tell the Python server to start generating the audio files
                 await fetch('/start_radio');
-                
-                // 2. Start checking if it's done
                 checkProgress();
-                
             } catch (error) {
                 alert("Could not connect to server. Make sure it is running.");
                 location.reload();
@@ -157,12 +162,10 @@
 
         async function checkProgress() {
             try {
-                // Ask the server if it's finished
                 const response = await fetch('/check_status');
                 const data = await response.json();
 
                 if (data.status === "ready") {
-                    // It's done! Load the playlist.
                     playlist = data.playlist;
                     
                     if (!playlist || playlist.length === 0) {
@@ -171,39 +174,35 @@
                         return;
                     }
 
-                    // Switch to the player screen
                     document.getElementById('loading').classList.add('hidden');
                     document.getElementById('radio-player').classList.remove('hidden');
                     
                     currentIndex = 0;
                     loadStory(currentIndex);
                 } else {
-                    // Still generating, check again in 3 seconds
+                    if (data.action) {
+                        document.getElementById('live-status').innerText = data.action;
+                    }
                     setTimeout(checkProgress, 3000);
                 }
             } catch (error) {
-                // If the server drops connection momentarily, just wait and try again
-                console.log("Checking again...");
+                console.log("Reconnecting...");
                 setTimeout(checkProgress, 3000);
             }
         }
 
         function loadStory(index) {
             const story = playlist[index];
-            
-            // Update text on the screen
             document.getElementById('queue-status').innerText = `Now Playing: Story ${index + 1} of ${playlist.length}`;
             document.getElementById('news-title').innerText = story.title;
             document.getElementById('news-script').innerText = story.script;
             document.getElementById('news-source').innerText = story.source.toUpperCase();
             
-            // Load and play the audio
             const audio = document.getElementById('audio-element');
             audio.src = story.audio_url;
             audio.load();
-            audio.play().catch(e => console.log("Autoplay blocked. User must click play."));
+            audio.play().catch(e => console.log("Autoplay blocked."));
 
-            // When the audio finishes, automatically load the next one
             audio.onended = () => {
                 if (currentIndex < playlist.length - 1) {
                     currentIndex++;
@@ -219,8 +218,6 @@
             if (currentIndex < playlist.length - 1) {
                 currentIndex++;
                 loadStory(currentIndex);
-            } else {
-                alert("End of broadcast.");
             }
         }
     </script>
