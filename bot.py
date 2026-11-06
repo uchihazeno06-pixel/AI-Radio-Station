@@ -35,6 +35,7 @@ FEEDS = [
 # --- 2. GLOBAL STATUS TRACKER ---
 radio_status = {
     "status": "idle", 
+    "current_action": "",
     "playlist": []
 }
 
@@ -78,12 +79,16 @@ def build_radio_playlist():
                 if article_url in used_urls: continue
                 
                 title = latest_article.title
+                
+                radio_status["current_action"] = f"Scraping full article: {title}"
+                
                 raw_text = get_full_article_text(article_url)
                 
                 if not raw_text or len(raw_text) < 100:
                     raw_text = latest_article.get('summary', latest_article.get('description', ''))
 
-                print(f"🤖 Generating AI Script for: {title}")
+                radio_status["current_action"] = f"Writing AI script: {title}"
+                
                 prompt = f"""
                 You are a professional radio news anchor. I will give you an article.
                 If the article is not in English, translate it to English first.
@@ -112,6 +117,9 @@ def build_radio_playlist():
                 if not response: continue
 
                 ai_script = response.text
+                
+                radio_status["current_action"] = f"Generating audio: {title}"
+                
                 audio_filename = f"story_{uuid.uuid4().hex}.mp3"
                 asyncio.run(generate_audio(ai_script, audio_filename))
 
@@ -128,6 +136,7 @@ def build_radio_playlist():
                 continue
                 
     radio_status["playlist"] = playlist
+    radio_status["current_action"] = "Finished!"
     radio_status["status"] = "ready"
 
 # --- 6. THE WEB ROUTES ---
@@ -135,6 +144,7 @@ def build_radio_playlist():
 def start_radio():
     global radio_status
     radio_status["status"] = "generating"
+    radio_status["current_action"] = "Starting up..."
     radio_status["playlist"] = []
     
     thread = threading.Thread(target=build_radio_playlist)
@@ -148,7 +158,10 @@ def check_status():
     if radio_status["status"] == "ready":
         return jsonify({"status": "ready", "playlist": radio_status["playlist"]})
     else:
-        return jsonify({"status": "generating"})
+        return jsonify({
+            "status": "generating", 
+            "action": radio_status.get("current_action", "Starting up...")
+        })
 
 @app.route('/audio/<filename>')
 def serve_audio(filename):
